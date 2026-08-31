@@ -20,6 +20,10 @@ int8_t currentSpeedState = 0;
 bool lastUpState   = HIGH;
 bool lastDownState = HIGH;
 
+// Heartbeat ticker
+unsigned long lastSendTime = 0;
+const unsigned long HEARTBEAT_MS = 500;
+
 void sendSpeedState(int8_t state) {
   esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *)&state, 1);
   if (result == ESP_OK) {
@@ -98,10 +102,13 @@ void loop() {
     }
   }
 
-  // Send state update only when speed state changes
-  if (nextState != currentSpeedState) {
+  unsigned long now = millis();
+  bool stateChanged = (nextState != currentSpeedState);
+
+  if (stateChanged || (now - lastSendTime >= HEARTBEAT_MS)) {
     currentSpeedState = nextState;
     sendSpeedState(currentSpeedState);
+    lastSendTime = now;
   }
 
   lastUpState   = !upPressed;

@@ -3,11 +3,21 @@
 #include <WiFi.h>
 #include <esp_wifi.h>
 
+
 // DRV8833 driver pins
 const int IN1_PIN = 4;
 const int IN2_PIN = 5;
 
-// Motor speed targets and limits (-140 to +140)
+// LED pin for status indication
+const int LED_PIN = 8;
+const int LED_ON = LOW;
+const int LED_OFF = HIGH;
+
+unsigned long lastPacketTime = 0;
+const unsigned long CONNECTION_TIMEOUT_MS = 2000; // 2 without packets = connection lost
+unsigned long lastBlinkTime = 0;
+bool ledState = LED_OFF;
+
 // Positive = FORWARD, Negative = REVERSE, 0 = STOP
 int targetPWM  = 0;
 int currentPWM = 0;
@@ -51,6 +61,8 @@ void updateMotorHardware(int pwm) {
 // ESP-NOW Receive Callback
 void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
   if (len > 0) {
+    lastPacketTime = millis();
+
     int8_t speedState = (int8_t)incomingData[0];
     targetPWM = stateToPWM(speedState);
     Serial.printf("Command received: State [%d] -> Target PWM: %d\n", speedState, targetPWM);
@@ -63,6 +75,9 @@ void setup() {
   pinMode(IN2_PIN, OUTPUT);
   digitalWrite(IN1_PIN, LOW);
   digitalWrite(IN2_PIN, LOW);
+
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LED_OFF);
 
   Serial.begin(115200);
 
@@ -84,6 +99,22 @@ void setup() {
 
 void loop() {
   unsigned long now = millis();
+
+  // Connection control
+  bool isConnected = (now - lastPacketTime <= CONNECTION_TIMEOUT_MS);
+
+  if (isConnected) {
+    digitalWrite(LED_PIN, LED_ON); // Signal present — LED ON
+  } else {
+    targetPWM = 0; // Emergency stop motor on signal loss
+    
+    // Blink LED (every 300 ms)
+    if (now - lastBlinkTime >= 300) {
+      lastBlinkTime = now;
+      ledState = !ledState;
+      digitalWrite(LED_PIN, ledState ? LED_ON : LED_OFF);
+    }
+  }
 
   // Smooth PWM acceleration/deceleration ramp ticker
   if (now - lastRampTime >= RAMP_INTERVAL_MS) {
