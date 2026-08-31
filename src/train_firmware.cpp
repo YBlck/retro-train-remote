@@ -3,56 +3,62 @@
 #include <WiFi.h>
 #include <esp_wifi.h>
 
-// DRV8833 driver pins (safe GPIOs without boot-strapping conflicts)
+// DRV8833 driver pins
 const int IN1_PIN = 4;
 const int IN2_PIN = 5;
 
-// Apply motor speed based on state (-1 to 3)
-void applyMotorSpeed(int8_t state) {
+// Motor speed targets and limits (-140 to +140)
+// Positive = FORWARD, Negative = REVERSE, 0 = STOP
+int targetPWM  = 0;
+int currentPWM = 0;
+
+// Acceleration configuration
+unsigned long lastRampTime = 0;
+const unsigned long RAMP_INTERVAL_MS = 20; // Time between PWM steps (lower = faster acceleration)
+const int PWM_STEP = 5;                     // PWM change per step (higher = faster acceleration)
+
+// Map speed states (-1 to 3) to exact custom PWM values
+int stateToPWM(int8_t state) {
   switch (state) {
-    case 3: // FORWARD Speed 3 (Fast ~3.0V PWM)
-      analogWrite(IN1_PIN, 140);
-      analogWrite(IN2_PIN, 0);
-      Serial.println("Motor: FORWARD [ Fast / Speed 3 ]");
-      break;
-
-    case 2: // FORWARD Speed 2 (Medium ~2.3V PWM)
-      analogWrite(IN1_PIN, 110);
-      analogWrite(IN2_PIN, 0);
-      Serial.println("Motor: FORWARD [ Medium / Speed 2 ]");
-      break;
-
-    case 1: // FORWARD Speed 1 (Slow ~1.6V PWM)
-      analogWrite(IN1_PIN, 80);
-      analogWrite(IN2_PIN, 0);
-      Serial.println("Motor: FORWARD [ Slow / Speed 1 ]");
-      break;
-
-    case -1: // REVERSE (Hold mode PWM)
-      analogWrite(IN1_PIN, 0);
-      analogWrite(IN2_PIN, 80);
-      Serial.println("Motor: REVERSE [ Hold Active ]");
-      break;
-
-    case 0: // STOP
-    default:
-      analogWrite(IN1_PIN, 0);
-      analogWrite(IN2_PIN, 0);
-      Serial.println("Motor: STOPPED");
-      break;
+    case 3:  return 140;  // FORWARD Speed 3 (Fast)
+    case 2:  return 110;  // FORWARD Speed 2 (Medium)
+    case 1:  return 80;   // FORWARD Speed 1 (Slow)
+    case -1: return -110; // REVERSE (Hold mode)
+    case 0:
+    default: return 0;    // STOP
   }
 }
 
-// Callback signature for Arduino ESP32 Core v2.x (v2.0.17)
+// Update driver hardware outputs based on current PWM
+void updateMotorHardware(int pwm) {
+  if (pwm > 0) {
+    // Forward
+    analogWrite(IN1_PIN, pwm);
+    analogWrite(IN2_PIN, 0);
+  } 
+  else if (pwm < 0) {
+    // Reverse
+    analogWrite(IN1_PIN, 0);
+    analogWrite(IN2_PIN, abs(pwm));
+  } 
+  else {
+    // Full stop
+    analogWrite(IN1_PIN, 0);
+    analogWrite(IN2_PIN, 0);
+  }
+}
+
+// ESP-NOW Receive Callback
 void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
   if (len > 0) {
     int8_t speedState = (int8_t)incomingData[0];
-    applyMotorSpeed(speedState);
+    targetPWM = stateToPWM(speedState);
+    Serial.printf("Command received: State [%d] -> Target PWM: %d\n", speedState, targetPWM);
   }
 }
 
 void setup() {
-  // Force driver pins LOW immediately to prevent motor spin during boot
+  // Force driver pins LOW immediately to prevent motor spin during MCU boot
   pinMode(IN1_PIN, OUTPUT);
   pinMode(IN2_PIN, OUTPUT);
   digitalWrite(IN1_PIN, LOW);
@@ -60,25 +66,42 @@ void setup() {
 
   Serial.begin(115200);
 
-  // Enable Wi-Fi in Station mode
   WiFi.mode(WIFI_STA);
 
-  // Radio Optimizations to remove lag and prevent overheating:
-  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE); // Lock Wi-Fi channel
-  esp_wifi_set_ps(WIFI_PS_NONE);                  // Disable sleep mode for instant response
-  esp_wifi_set_max_tx_power(32);                 // Lower TX power (~8dBm) to cool MCU down
+  // Radio Optimizations (Channel lock, NO sleep, low TX power)
+  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+  esp_wifi_set_ps(WIFI_PS_NONE);
+  esp_wifi_set_max_tx_power(32); // ~8dBm TX power for ultra low consumption
 
   if (esp_now_init() != ESP_OK) {
     Serial.println("Error initializing ESP-NOW!");
     return;
   }
 
-  // Register ESP-NOW receive callback
   esp_now_register_recv_cb(OnDataRecv);
-
-  Serial.println("Optimized Train Motor Receiver Ready.");
+  Serial.println("Train Motor Controller Ready (PWM: 80, 110, 140).");
 }
 
 void loop() {
-  // Empty loop - incoming packets are handled asynchronously via interrupt callback
+  unsigned long now = millis();
+
+  // Smooth PWM acceleration/deceleration ramp ticker
+  if (now - lastRampTime >= RAMP_INTERVAL_MS) {
+    lastRampTime = now;
+
+    if (currentPWM != targetPWM) {
+      // Step currentPWM towards targetPWM
+      if (currentPWM < targetPWM) {
+        currentPWM += PWM_STEP;
+        if (currentPWM > targetPWM) currentPWM = targetPWM;
+      } 
+      else if (currentPWM > targetPWM) {
+        currentPWM -= PWM_STEP;
+        if (currentPWM < targetPWM) currentPWM = targetPWM;
+      }
+
+      // Apply the newly calculated PWM to the driver pins
+      updateMotorHardware(currentPWM);
+    }
+  }
 }
