@@ -1,13 +1,20 @@
 #include <Arduino.h>
 #include <esp_now.h>
 #include <WiFi.h>
+#include <esp_wifi.h>
+
 
 const int BTN_UP_PIN   = 6;
 const int BTN_DOWN_PIN = 7;
 
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-// Speed States: -1 = REVERSE, 0 = STOP, 1..3 = FORWARD speeds
+// Speed States:
+// -1 = REVERSE (hold mode)
+//  0 = STOP
+//  1 = FORWARD Speed 1
+//  2 = FORWARD Speed 2
+//  3 = FORWARD Speed 3
 int8_t currentSpeedState = 0;
 
 bool lastUpState   = HIGH;
@@ -30,14 +37,20 @@ void setup() {
 
   WiFi.mode(WIFI_STA);
 
+  // Radio Optimizations to remove lag and prevent overheating:
+  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE); // Lock Wi-Fi channel
+  esp_wifi_set_ps(WIFI_PS_NONE);                  // Disable sleep mode for instant response
+  esp_wifi_set_max_tx_power(32);                  // Lower TX power (~8dBm) to cool MCU down
+
   if (esp_now_init() != ESP_OK) {
     Serial.println("Error initializing ESP-NOW!");
     return;
   }
 
+  // Register broadcast peer on channel 1
   esp_now_peer_info_t peerInfo = {};
   memcpy(peerInfo.peer_addr, broadcastAddress, 6);
-  peerInfo.channel = 0;  
+  peerInfo.channel = 1;  
   peerInfo.encrypt = false;
   
   if (esp_now_add_peer(&peerInfo) != ESP_OK) {
@@ -52,7 +65,7 @@ void loop() {
   bool upPressed   = (digitalRead(BTN_UP_PIN) == LOW);
   bool downPressed = (digitalRead(BTN_DOWN_PIN) == LOW);
 
-  // Edge detection for clicks (transition from HIGH to LOW)
+  // Edge detection for clicks (HIGH -> LOW transition)
   bool upClicked   = (upPressed && lastUpState == HIGH);
   bool downClicked = (downPressed && lastDownState == HIGH);
 
@@ -73,19 +86,19 @@ void loop() {
   // 3. Mode: Currently STOPPED (0)
   else if (currentSpeedState == 0) {
     if (upClicked) {
-      nextState = 1; // Start moving forward
+      nextState = 1; // Start moving forward at Speed 1
     } else if (downPressed) {
-      nextState = -1; // HOLD DOWN to reverse
+      nextState = -1; // Hold DOWN button for Reverse
     }
   }
   // 4. Mode: Currently REVERSING (-1)
   else if (currentSpeedState == -1) {
     if (!downPressed || upPressed) {
-      nextState = 0; // Release DOWN button -> STOP
+      nextState = 0; // Releasing DOWN button triggers STOP
     }
   }
 
-  // Send state update only when state changes
+  // Send state update only when speed state changes
   if (nextState != currentSpeedState) {
     currentSpeedState = nextState;
     sendSpeedState(currentSpeedState);
