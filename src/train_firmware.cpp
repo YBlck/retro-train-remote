@@ -2,11 +2,13 @@
 #include <esp_now.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
-
+#include "sound_data.h"
 
 // DRV8833 driver pins
 const int IN1_PIN = 4;
 const int IN2_PIN = 5;
+
+const int AUDIO_PIN = 2; // DRV8833 channel B - B1IN - B2IN=GND
 
 // LED pin for status indication
 const int LED_PIN = 8;
@@ -14,18 +16,38 @@ const int LED_ON = LOW;
 const int LED_OFF = HIGH;
 
 unsigned long lastPacketTime = 0;
-const unsigned long CONNECTION_TIMEOUT_MS = 2000; // 2 without packets = connection lost
+const unsigned long CONNECTION_TIMEOUT_MS = 2000; // 2 sec without packets = connection lost
 unsigned long lastBlinkTime = 0;
 bool ledState = LED_OFF;
 
 // Positive = FORWARD, Negative = REVERSE, 0 = STOP
-int targetPWM  = 0;
+int targetPWM = 0;
 int currentPWM = 0;
 
 // Acceleration configuration
 unsigned long lastRampTime = 0;
 const unsigned long RAMP_INTERVAL_MS = 20; // Time between PWM steps (lower = faster acceleration)
-const int PWM_STEP = 5;                     // PWM change per step (higher = faster acceleration)
+const int PWM_STEP = 5; // PWM change per step (higher = faster acceleration)
+
+// Audio playback state
+volatile bool isAudioPlaying = false;
+volatile uint32_t soundIndex = 0;
+hw_timer_t *audioTimer = NULL;
+
+// Timer interrupt: called 11025 times per second
+void IRAM_ATTR onAudioTimer() {
+  if (isAudioPlaying && chugSoundLen > 0) {
+    // Output current sample to PWM (0..255)
+    analogWrite(AUDIO_PIN, chugSound[soundIndex]);
+
+    soundIndex++;
+    if (soundIndex >= chugSoundLen) {
+      soundIndex = 0; // Loop chugging sound
+    }
+  } else {
+    analogWrite(AUDIO_PIN, 0); // Silence on stop
+  }
+}
 
 // Map speed states (-1 to 3) to exact custom PWM values
 int stateToPWM(int8_t state) {
@@ -45,16 +67,21 @@ void updateMotorHardware(int pwm) {
     // Forward
     analogWrite(IN1_PIN, pwm);
     analogWrite(IN2_PIN, 0);
+    isAudioPlaying = true;
   } 
   else if (pwm < 0) {
     // Reverse
     analogWrite(IN1_PIN, 0);
     analogWrite(IN2_PIN, abs(pwm));
+    isAudioPlaying = true;
   } 
   else {
     // Full stop
     analogWrite(IN1_PIN, 0);
     analogWrite(IN2_PIN, 0);
+    isAudioPlaying = false;
+    soundIndex = 0;
+    analogWrite(AUDIO_PIN, 0);
   }
 }
 
@@ -76,6 +103,12 @@ void setup() {
   digitalWrite(IN1_PIN, LOW);
   digitalWrite(IN2_PIN, LOW);
 
+  // Audio pin init (31.25 kHz PWM frequency eliminates 1kHz high-pitch carrier noise)
+  pinMode(AUDIO_PIN, OUTPUT);
+  analogWriteFrequency(31250);
+  analogWrite(AUDIO_PIN, 0);
+
+  // LED pin init
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LED_OFF);
 
@@ -94,7 +127,15 @@ void setup() {
   }
 
   esp_now_register_recv_cb(OnDataRecv);
-  Serial.println("Train Motor Controller Ready (PWM: 80, 110, 140).");
+
+  // Audio timer setup (11025 Hz sampling rate)
+  // 80 MHz / 80 = 1 MHz (1 us tick). 1000000 / 11025 ≈ 91 us period.
+  audioTimer = timerBegin(0, 80, true);
+  timerAttachInterrupt(audioTimer, &onAudioTimer, true);
+  timerAlarmWrite(audioTimer, 91, true);
+  timerAlarmEnable(audioTimer);
+
+  Serial.println("Train Controller Ready (Motor + Audio + Status LED).");
 }
 
 void loop() {
