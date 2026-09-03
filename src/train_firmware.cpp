@@ -12,8 +12,8 @@ const int AUDIO_PIN = 2; // DRV8833 channel B - B1IN - B2IN=GND
 
 // LED pin for status indication
 const int LED_PIN = 8;
-const int LED_ON = LOW;
-const int LED_OFF = HIGH;
+const int LED_ON = HIGH;
+const int LED_OFF = LOW;
 
 unsigned long lastPacketTime = 0;
 const unsigned long CONNECTION_TIMEOUT_MS = 2000; // 2 sec without packets = connection lost
