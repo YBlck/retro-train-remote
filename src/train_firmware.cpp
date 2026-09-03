@@ -7,149 +7,136 @@
 // DRV8833 driver pins
 const int IN1_PIN = 4;
 const int IN2_PIN = 5;
+const int AUDIO_PIN = 2; // DRV8833 channel B
 
-const int AUDIO_PIN = 2; // DRV8833 channel B - B1IN - B2IN=GND
-
-// LED pin for status indication
+// LED pin
 const int LED_PIN = 8;
 const int LED_ON = HIGH;
 const int LED_OFF = LOW;
 
+// LEDC Channels Assignment
+const int MOTOR_CH_1 = 0;
+const int MOTOR_CH_2 = 1;
+const int AUDIO_CH   = 2;
+
 unsigned long lastPacketTime = 0;
-const unsigned long CONNECTION_TIMEOUT_MS = 2000; // 2 sec without packets = connection lost
+const unsigned long CONNECTION_TIMEOUT_MS = 2000;
 unsigned long lastBlinkTime = 0;
 bool ledState = LED_OFF;
 
-// Positive = FORWARD, Negative = REVERSE, 0 = STOP
 int targetPWM = 0;
 int currentPWM = 0;
 
-// Acceleration configuration
 unsigned long lastRampTime = 0;
-const unsigned long RAMP_INTERVAL_MS = 20; // Time between PWM steps (lower = faster acceleration)
-const int PWM_STEP = 5; // PWM change per step (higher = faster acceleration)
+const unsigned long RAMP_INTERVAL_MS = 20;
+const int PWM_STEP = 5;
 
-// Audio playback state
 volatile bool isAudioPlaying = false;
 volatile uint32_t soundIndex = 0;
 hw_timer_t *audioTimer = NULL;
 
-// Timer interrupt: called 11025 times per second
+// Setup audio timer interrupt (8000 Hz)
 void IRAM_ATTR onAudioTimer() {
   if (isAudioPlaying && chugSoundLen > 0) {
-    // Output current sample to PWM (0..255)
-    analogWrite(AUDIO_PIN, chugSound[soundIndex]);
-
+    ledcWrite(AUDIO_CH, chugSound[soundIndex]);
     soundIndex++;
     if (soundIndex >= chugSoundLen) {
-      soundIndex = 0; // Loop chugging sound
+      soundIndex = 0; // Loop sound
     }
   } else {
-    analogWrite(AUDIO_PIN, 0); // Silence on stop
+    ledcWrite(AUDIO_CH, 0);
   }
 }
 
-// Map speed states (-1 to 3) to exact custom PWM values
 int stateToPWM(int8_t state) {
   switch (state) {
-    case 3:  return 140;  // FORWARD Speed 3 (Fast)
-    case 2:  return 110;  // FORWARD Speed 2 (Medium)
-    case 1:  return 80;   // FORWARD Speed 1 (Slow)
-    case -1: return -110; // REVERSE (Hold mode)
+    case 3:  return 140;
+    case 2:  return 110;
+    case 1:  return 80;
+    case -1: return -110;
     case 0:
-    default: return 0;    // STOP
+    default: return 0;
   }
 }
 
-// Update driver hardware outputs based on current PWM
 void updateMotorHardware(int pwm) {
   if (pwm > 0) {
     // Forward
-    analogWrite(IN1_PIN, pwm);
-    analogWrite(IN2_PIN, 0);
+    ledcWrite(MOTOR_CH_1, pwm);
+    ledcWrite(MOTOR_CH_2, 0);
     isAudioPlaying = true;
   } 
   else if (pwm < 0) {
     // Reverse
-    analogWrite(IN1_PIN, 0);
-    analogWrite(IN2_PIN, abs(pwm));
+    ledcWrite(MOTOR_CH_1, 0);
+    ledcWrite(MOTOR_CH_2, abs(pwm));
     isAudioPlaying = true;
   } 
   else {
     // Full stop
-    analogWrite(IN1_PIN, 0);
-    analogWrite(IN2_PIN, 0);
+    ledcWrite(MOTOR_CH_1, 0);
+    ledcWrite(MOTOR_CH_2, 0);
     isAudioPlaying = false;
     soundIndex = 0;
-    analogWrite(AUDIO_PIN, 0);
+    ledcWrite(AUDIO_CH, 0);
   }
 }
 
-// ESP-NOW Receive Callback
 void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
   if (len > 0) {
     lastPacketTime = millis();
-
     int8_t speedState = (int8_t)incomingData[0];
     targetPWM = stateToPWM(speedState);
-    Serial.printf("Command received: State [%d] -> Target PWM: %d\n", speedState, targetPWM);
   }
 }
 
 void setup() {
-  // Force driver pins LOW immediately to prevent motor spin during MCU boot
   pinMode(IN1_PIN, OUTPUT);
   pinMode(IN2_PIN, OUTPUT);
-  digitalWrite(IN1_PIN, LOW);
-  digitalWrite(IN2_PIN, LOW);
-
-  // Audio pin init (31.25 kHz PWM frequency eliminates 1kHz high-pitch carrier noise)
   pinMode(AUDIO_PIN, OUTPUT);
-  analogWriteFrequency(31250);
-  analogWrite(AUDIO_PIN, 0);
-
-  // LED pin init
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LED_OFF);
+
+  // Setup motor PWM (1 kHz, 8-bit)
+  ledcSetup(MOTOR_CH_1, 1000, 8);
+  ledcAttachPin(IN1_PIN, MOTOR_CH_1);
+  ledcSetup(MOTOR_CH_2, 1000, 8);
+  ledcAttachPin(IN2_PIN, MOTOR_CH_2);
+
+  // Setup audio PWM (31.25 kHz, 8-bit)
+  ledcSetup(AUDIO_CH, 31250, 8);
+  ledcAttachPin(AUDIO_PIN, AUDIO_CH);
+  ledcWrite(AUDIO_CH, 0);
 
   Serial.begin(115200);
 
   WiFi.mode(WIFI_STA);
-
-  // Radio Optimizations (Channel lock, NO sleep, low TX power)
   esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
   esp_wifi_set_ps(WIFI_PS_NONE);
-  esp_wifi_set_max_tx_power(32); // ~8dBm TX power for ultra low consumption
+  esp_wifi_set_max_tx_power(32);
 
   if (esp_now_init() != ESP_OK) {
-    Serial.println("Error initializing ESP-NOW!");
     return;
   }
-
   esp_now_register_recv_cb(OnDataRecv);
 
-  // Audio timer setup (11025 Hz sampling rate)
-  // 80 MHz / 80 = 1 MHz (1 us tick). 1000000 / 11025 ≈ 91 us period.
+  // Timer settings (8000 Hz)
   audioTimer = timerBegin(0, 80, true);
   timerAttachInterrupt(audioTimer, &onAudioTimer, true);
-  timerAlarmWrite(audioTimer, 91, true);
+  timerAlarmWrite(audioTimer, 125, true);
   timerAlarmEnable(audioTimer);
 
-  Serial.println("Train Controller Ready (Motor + Audio + Status LED).");
+  isAudioPlaying = true;
 }
 
 void loop() {
   unsigned long now = millis();
-
-  // Connection control
   bool isConnected = (now - lastPacketTime <= CONNECTION_TIMEOUT_MS);
 
   if (isConnected) {
-    digitalWrite(LED_PIN, LED_ON); // Signal present — LED ON
+    digitalWrite(LED_PIN, LED_ON);
   } else {
-    targetPWM = 0; // Emergency stop motor on signal loss
-    
-    // Blink LED (every 300 ms)
+    targetPWM = 0;
     if (now - lastBlinkTime >= 300) {
       lastBlinkTime = now;
       ledState = !ledState;
@@ -157,12 +144,9 @@ void loop() {
     }
   }
 
-  // Smooth PWM acceleration/deceleration ramp ticker
   if (now - lastRampTime >= RAMP_INTERVAL_MS) {
     lastRampTime = now;
-
     if (currentPWM != targetPWM) {
-      // Step currentPWM towards targetPWM
       if (currentPWM < targetPWM) {
         currentPWM += PWM_STEP;
         if (currentPWM > targetPWM) currentPWM = targetPWM;
@@ -171,8 +155,6 @@ void loop() {
         currentPWM -= PWM_STEP;
         if (currentPWM < targetPWM) currentPWM = targetPWM;
       }
-
-      // Apply the newly calculated PWM to the driver pins
       updateMotorHardware(currentPWM);
     }
   }
