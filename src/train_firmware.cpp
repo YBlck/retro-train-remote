@@ -19,8 +19,13 @@ const int MOTOR_CH_1 = 0;
 const int MOTOR_CH_2 = 1;
 const int AUDIO_CH   = 2;
 
+// motor speed state to PWM mapping
+const int SPEED_1 = 80;   // Forward speed 1
+const int SPEED_2 = 100;  // Forward speed 2
+const int SPEED_3 = 120;  // Forward speed 3
+
 unsigned long lastPacketTime = 0;
-const unsigned long CONNECTION_TIMEOUT_MS = 2000;
+const unsigned long CONNECTION_TIMEOUT_MS = 3000;
 unsigned long lastBlinkTime = 0;
 bool ledState = LED_OFF;
 
@@ -50,10 +55,10 @@ void IRAM_ATTR onAudioTimer() {
 
 int stateToPWM(int8_t state) {
   switch (state) {
-    case 3:  return 140;
-    case 2:  return 110;
-    case 1:  return 80;
-    case -1: return -110;
+    case 3:  return SPEED_3;
+    case 2:  return SPEED_2;
+    case 1:  return SPEED_1;
+    case -1: return -SPEED_1;
     case 0:
     default: return 0;
   }
