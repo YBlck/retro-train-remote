@@ -5,8 +5,8 @@
 #include "sound_data.h"
 
 // DRV8833 driver pins
-const int IN1_PIN = 4; // Motor IN1
-const int IN2_PIN = 5; // Motor IN2
+const int IN1_PIN = 5; // Motor IN1
+const int IN2_PIN = 4; // Motor IN2
 const int AUDIO_PIN     = 2; // DRV8833 IN3 (Audio Channel B+)
 const int AUDIO_PIN_INV = 3; // DRV8833 IN4 (Audio Channel B-)
 
