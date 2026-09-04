@@ -5,12 +5,12 @@
 #include "sound_data.h"
 
 // DRV8833 driver pins
-const int IN1_PIN = 4; // Motor IN1
-const int IN2_PIN = 5; // Motor IN2
+const int IN1_PIN = 4; 
+const int IN2_PIN = 5; 
 
-// Audio BTL (Bridge-Tied Load) pins for DRV8833 Channel B
-const int AUDIO_PIN     = 2; // DRV8833 IN3 (Audio B+)
-const int AUDIO_PIN_INV = 3; // DRV8833 IN4 (Audio B-)
+// Audio BTL pins
+const int AUDIO_PIN     = 2; 
+const int AUDIO_PIN_INV = 3; 
 
 // LED pin
 const int LED_PIN = 8;
@@ -20,19 +20,18 @@ const int LED_OFF = LOW;
 // LEDC Channels Assignment
 const int MOTOR_CH_1   = 0;
 const int MOTOR_CH_2   = 1;
-const int AUDIO_CH     = 2; // Direct audio channel
-const int AUDIO_CH_INV = 3; // Inverted audio channel
+const int AUDIO_CH     = 2; 
+const int AUDIO_CH_INV = 3; 
 
-// Motor speed state to PWM mapping
-const int SPEED_1 = 70;   // Forward speed 1
-const int SPEED_2 = 90;  // Forward speed 2
-const int SPEED_3 = 110;  // Forward speed 3
+// Motor speed mapping
+const int SPEED_1 = 70;   
+const int SPEED_2 = 90;  
+const int SPEED_3 = 110;  
 
-// Audio pitch parameters (8000 Hz = 125 ticks base)
+// Audio pitch parameters
 const int BASE_TICKS = 125;
 const int MAX_TICKS  = 95;
 
-// Variables shared between ESP-NOW and main thread
 volatile unsigned long lastPacketTime = 0;
 const unsigned long CONNECTION_TIMEOUT_MS = 3000;
 unsigned long lastBlinkTime = 0;
@@ -45,33 +44,51 @@ unsigned long lastRampTime = 0;
 const unsigned long RAMP_INTERVAL_MS = 20;
 const int PWM_STEP = 5;
 
+// Audio control flags
 volatile bool isAudioPlaying = false;
+volatile bool isHornPlaying = false;
 volatile uint32_t soundIndex = 0;
+volatile uint32_t hornIndex = 0;
 
 hw_timer_t *audioTimer = NULL;
 int lastAudioTicks = -1;
 
 // Setup audio timer interrupt (8000 Hz base)
 void IRAM_ATTR onAudioTimer() {
-  if (isAudioPlaying && chugSoundLen > 0) {
-    uint8_t sample = chugSound[soundIndex];
+  uint8_t sample = 0;
+  bool activeSound = false;
 
-    // Differential (BTL) output: main signal and inverted signal
+  // Priority 1: Horn
+  if (isHornPlaying && hornSoundLen > 0) {
+    sample = hornSound[hornIndex];
+    hornIndex++;
+    activeSound = true;
+
+    if (hornIndex >= hornSoundLen) {
+      hornIndex = 0;
+      isHornPlaying = false; // Гудок закінчився, повертаємось до фону
+    }
+  } 
+  // Priority 2: Motor sound (chug-chug)
+  else if (isAudioPlaying && chugSoundLen > 0) {
+    sample = chugSound[soundIndex];
+    soundIndex++;
+    activeSound = true;
+
+    if (soundIndex >= chugSoundLen) {
+      soundIndex = 0;
+    }
+  }
+
+  if (activeSound) {
     ledcWrite(AUDIO_CH, sample);
     ledcWrite(AUDIO_CH_INV, 255 - sample);
-
-    soundIndex++;
-    if (soundIndex >= chugSoundLen) {
-      soundIndex = 0; // Loop sound
-    }
   } else {
     ledcWrite(AUDIO_CH, 0);
     ledcWrite(AUDIO_CH_INV, 0);
-    soundIndex = 0;
   }
 }
 
-// Dynamic audio pitch modulation based on train speed
 void updateAudioPitch(int pwm) {
   int absPwm = abs(pwm);
   int ticks = BASE_TICKS;
@@ -100,32 +117,40 @@ int stateToPWM(int8_t state) {
 
 void updateMotorHardware(int pwm) {
   if (pwm > 0) {
-    // Forward
     ledcWrite(MOTOR_CH_1, pwm);
     ledcWrite(MOTOR_CH_2, 0);
     isAudioPlaying = true;
   } 
   else if (pwm < 0) {
-    // Reverse
     ledcWrite(MOTOR_CH_1, 0);
     ledcWrite(MOTOR_CH_2, abs(pwm));
     isAudioPlaying = true;
   } 
   else {
-    // Full stop
     ledcWrite(MOTOR_CH_1, 0);
     ledcWrite(MOTOR_CH_2, 0);
     isAudioPlaying = false;
+    soundIndex = 0;
   }
 
   updateAudioPitch(pwm);
 }
 
+// Receive data: 1st byte = speed, 2nd byte = horn button (1/0)
 void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
-  if (len > 0) {
+  if (len >= 1) {
     lastPacketTime = millis();
     int8_t speedState = (int8_t)incomingData[0];
     targetPWM = stateToPWM(speedState);
+  }
+
+  if (len >= 2) {
+    bool hornState = (incomingData[1] == 1);
+    // Start horn sound if button is pressed and it's not already playing
+    if (hornState && !isHornPlaying) {
+      hornIndex = 0;
+      isHornPlaying = true;
+    }
   }
 }
 
@@ -137,13 +162,13 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LED_OFF);
 
-  // Setup motor PWM (1 kHz, 8-bit)
+  // Setup motor PWM
   ledcSetup(MOTOR_CH_1, 1000, 8);
   ledcAttachPin(IN1_PIN, MOTOR_CH_1);
   ledcSetup(MOTOR_CH_2, 1000, 8);
   ledcAttachPin(IN2_PIN, MOTOR_CH_2);
 
-  // Setup audio PWM (31.25 kHz, 8-bit) - Differential channels BTL
+  // Setup audio PWM BTL
   ledcSetup(AUDIO_CH, 31250, 8);
   ledcAttachPin(AUDIO_PIN, AUDIO_CH);
   ledcSetup(AUDIO_CH_INV, 31250, 8);
@@ -163,7 +188,7 @@ void setup() {
     esp_now_register_recv_cb(OnDataRecv);
   }
 
-  // Hardware Timer settings (8000 Hz)
+  // Timer settings
   audioTimer = timerBegin(0, 80, true);
   timerAttachInterrupt(audioTimer, &onAudioTimer, true);
   lastAudioTicks = BASE_TICKS;
@@ -188,8 +213,6 @@ void loop() {
 
   if (now - lastRampTime >= RAMP_INTERVAL_MS) {
     lastRampTime = now;
-
-    // Snapshot volatile variable to prevent race condition during ramping
     int target = targetPWM;
 
     if (currentPWM != target) {

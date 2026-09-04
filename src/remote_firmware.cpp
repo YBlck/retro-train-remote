@@ -3,9 +3,9 @@
 #include <WiFi.h>
 #include <esp_wifi.h>
 
-
 const int BTN_UP_PIN   = 6;
 const int BTN_DOWN_PIN = 7;
+const int BTN_HORN_PIN = 5;
 
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
@@ -16,6 +16,7 @@ uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 //  2 = FORWARD Speed 2
 //  3 = FORWARD Speed 3
 int8_t currentSpeedState = 0;
+bool lastHornState = false;
 
 bool lastUpState   = HIGH;
 bool lastDownState = HIGH;
@@ -24,11 +25,13 @@ bool lastDownState = HIGH;
 unsigned long lastSendTime = 0;
 const unsigned long HEARTBEAT_MS = 500;
 
-void sendSpeedState(int8_t state) {
-  esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *)&state, 1);
-  if (result == ESP_OK) {
-    Serial.printf("Sent Speed State: %d\n", state);
-  } else {
+void sendControlPacket(int8_t speedState, uint8_t hornState) {
+  uint8_t packet[2];
+  packet[0] = (uint8_t)speedState;
+  packet[1] = hornState;
+
+  esp_err_t result = esp_now_send(broadcastAddress, packet, sizeof(packet));
+  if (result != ESP_OK) {
     Serial.println("Error sending ESP-NOW packet!");
   }
 }
@@ -38,13 +41,14 @@ void setup() {
 
   pinMode(BTN_UP_PIN, INPUT_PULLUP);
   pinMode(BTN_DOWN_PIN, INPUT_PULLUP);
+  pinMode(BTN_HORN_PIN, INPUT_PULLUP);
 
   WiFi.mode(WIFI_STA);
 
-  // Radio Optimizations to remove lag and prevent overheating:
+  // Radio Optimizations:
   esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE); // Lock Wi-Fi channel
   esp_wifi_set_ps(WIFI_PS_NONE);                  // Disable sleep mode for instant response
-  esp_wifi_set_max_tx_power(32);                  // Lower TX power (~8dBm) to cool MCU down
+  esp_wifi_set_max_tx_power(32);                  // Lower TX power (~8dBm)
 
   if (esp_now_init() != ESP_OK) {
     Serial.println("Error initializing ESP-NOW!");
@@ -62,12 +66,13 @@ void setup() {
     return;
   }
 
-  Serial.println("Remote Ready. Holding DOWN from STOP will activate Reverse.");
+  Serial.println("Remote Ready with Horn support.");
 }
 
 void loop() {
   bool upPressed   = (digitalRead(BTN_UP_PIN) == LOW);
   bool downPressed = (digitalRead(BTN_DOWN_PIN) == LOW);
+  bool hornPressed = (digitalRead(BTN_HORN_PIN) == LOW);
 
   // Edge detection for clicks (HIGH -> LOW transition)
   bool upClicked   = (upPressed && lastUpState == HIGH);
@@ -75,7 +80,7 @@ void loop() {
 
   int8_t nextState = currentSpeedState;
 
-  // 1. Safety check: Both buttons pressed -> Emergency STOP
+  // 1. Safety check: Both speed buttons pressed -> Emergency STOP
   if (upPressed && downPressed) {
     nextState = 0;
   }
@@ -103,11 +108,15 @@ void loop() {
   }
 
   unsigned long now = millis();
-  bool stateChanged = (nextState != currentSpeedState);
+  bool speedChanged = (nextState != currentSpeedState);
+  bool hornChanged  = (hornPressed != lastHornState);
 
-  if (stateChanged || (now - lastSendTime >= HEARTBEAT_MS)) {
+  // Send packet if speed state changed, horn state changed, or on heartbeat interval
+  if (speedChanged || hornChanged || (now - lastSendTime >= HEARTBEAT_MS)) {
     currentSpeedState = nextState;
-    sendSpeedState(currentSpeedState);
+    lastHornState = hornPressed;
+
+    sendControlPacket(currentSpeedState, hornPressed ? 1 : 0);
     lastSendTime = now;
   }
 
