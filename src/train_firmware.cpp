@@ -21,6 +21,15 @@ const int MOTOR_CH_2   = 1;
 const int AUDIO_CH     = 2;
 const int AUDIO_CH_INV = 3;
 
+// PWM speed levels (mapped to motor speed states)
+const int PWM_SPEED_1 = 80;   // Speed 1 (Minimum)
+const int PWM_SPEED_2 = 110;  // Speed 2 (Medium)
+const int PWM_SPEED_3 = 140;  // Speed 3 (Maximum)
+
+// Audio playback parameters
+const int BASE_TICKS = 125;
+const int MAX_TICKS  = 100;
+
 // Offset to skip header bytes if needed
 const uint32_t AUDIO_START_OFFSET = 0;
 
@@ -41,7 +50,7 @@ volatile uint32_t soundIndex = AUDIO_START_OFFSET;
 volatile int fadeVolume = 0; // 0 to 256 for smooth start/stop envelope
 hw_timer_t *audioTimer = NULL;
 
-// Hardware Timer ISR (8000 Hz)
+// Hardware Timer ISR
 void IRAM_ATTR onAudioTimer() {
   // 1. Smooth Fade-In / Fade-Out control (~3 ms transition)
   if (isAudioPlaying) {
@@ -80,19 +89,34 @@ void IRAM_ATTR onAudioTimer() {
       }
     }
   } else {
-    // Output 0V on both pins during silence (0V differential, no DC current or heating)
+    // Output 0V on both pins during silence
     ledcWrite(AUDIO_CH, 0);
     ledcWrite(AUDIO_CH_INV, 0);
     soundIndex = AUDIO_START_OFFSET;
   }
 }
 
+void updateAudioPitch(int pwm) {
+  int absPwm = abs(pwm);
+
+  if (absPwm == 0) {
+    timerAlarmWrite(audioTimer, BASE_TICKS, true);
+    return;
+  }
+
+  // Мапінг від 1-ї швидкості до 3-ї швидкості
+  int ticks = map(absPwm, PWM_SPEED_1, PWM_SPEED_3, BASE_TICKS, MAX_TICKS);
+  ticks = constrain(ticks, MAX_TICKS, BASE_TICKS); // Тримає межі (100..125)
+
+  timerAlarmWrite(audioTimer, ticks, true);
+}
+
 int stateToPWM(int8_t state) {
   switch (state) {
-    case 3:  return 140;
-    case 2:  return 110;
-    case 1:  return 80;
-    case -1: return -110;
+    case 3:  return PWM_SPEED_3;
+    case 2:  return PWM_SPEED_2;
+    case 1:  return PWM_SPEED_1;
+    case -1: return -PWM_SPEED_1;
     case 0:
     default: return 0;
   }
@@ -115,10 +139,11 @@ void updateMotorHardware(int pwm) {
     // Full stop
     ledcWrite(MOTOR_CH_1, 0);
     ledcWrite(MOTOR_CH_2, 0);
-    
-    // Smoothly ramp down audio in ISR
     isAudioPlaying = false;
   }
+
+  // Update audio playback pitch matching motor speed
+  updateAudioPitch(pwm);
 }
 
 void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
@@ -164,10 +189,10 @@ void setup() {
   }
   esp_now_register_recv_cb(OnDataRecv);
 
-  // Hardware Timer configuration (8000 Hz)
+  // Hardware Timer configuration (Base 8000 Hz = 125 ticks)
   audioTimer = timerBegin(0, 80, true);
   timerAttachInterrupt(audioTimer, &onAudioTimer, true);
-  timerAlarmWrite(audioTimer, 125, true); // 125 ticks = 8000 Hz
+  timerAlarmWrite(audioTimer, 125, true);
   timerAlarmEnable(audioTimer);
 }
 
