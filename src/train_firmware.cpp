@@ -5,8 +5,8 @@
 #include "sound_data.h"
 
 // DRV8833 driver pins
-const int IN1_PIN = 4; 
-const int IN2_PIN = 5; 
+const int IN1_PIN = 5; 
+const int IN2_PIN = 4; 
 
 // Audio BTL pins
 const int AUDIO_PIN     = 2; 
@@ -24,9 +24,9 @@ const int AUDIO_CH     = 2;
 const int AUDIO_CH_INV = 3; 
 
 // Motor speed mapping
-const int SPEED_1 = 70;   
-const int SPEED_2 = 90;  
-const int SPEED_3 = 110;  
+const int SPEED_1 = 90;   
+const int SPEED_2 = 105;  
+const int SPEED_3 = 120;  
 
 // Audio pitch parameters
 const int BASE_TICKS = 125;
@@ -163,9 +163,9 @@ void setup() {
   digitalWrite(LED_PIN, LED_OFF);
 
   // Setup motor PWM
-  ledcSetup(MOTOR_CH_1, 1000, 8);
+  ledcSetup(MOTOR_CH_1, 8000, 8);
   ledcAttachPin(IN1_PIN, MOTOR_CH_1);
-  ledcSetup(MOTOR_CH_2, 1000, 8);
+  ledcSetup(MOTOR_CH_2, 8000, 8);
   ledcAttachPin(IN2_PIN, MOTOR_CH_2);
 
   // Setup audio PWM BTL
