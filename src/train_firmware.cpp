@@ -5,118 +5,111 @@
 #include "sound_data.h"
 
 // DRV8833 driver pins
-const int IN1_PIN = 5; // Motor IN1
-const int IN2_PIN = 4; // Motor IN2
-const int AUDIO_PIN     = 2; // DRV8833 IN3 (Audio Channel B+)
-const int AUDIO_PIN_INV = 3; // DRV8833 IN4 (Audio Channel B-)
+const int IN1_PIN = 4; 
+const int IN2_PIN = 5; 
+
+// Audio BTL pins
+const int AUDIO_PIN     = 2; 
+const int AUDIO_PIN_INV = 3; 
 
 // LED pin
 const int LED_PIN = 8;
-const int LED_ON = HIGH;
+const int LED_ON  = HIGH;
 const int LED_OFF = LOW;
 
 // LEDC Channels Assignment
 const int MOTOR_CH_1   = 0;
 const int MOTOR_CH_2   = 1;
-const int AUDIO_CH     = 2;
-const int AUDIO_CH_INV = 3;
+const int AUDIO_CH     = 2; 
+const int AUDIO_CH_INV = 3; 
 
-// PWM speed levels (mapped to motor speed states)
-const int PWM_SPEED_1 = 80;   // Speed 1 (Minimum)
-const int PWM_SPEED_2 = 110;  // Speed 2 (Medium)
-const int PWM_SPEED_3 = 140;  // Speed 3 (Maximum)
+// Motor speed mapping
+const int SPEED_1 = 100;   
+const int SPEED_2 = 120;  
+const int SPEED_3 = 140;  
 
-// Audio playback parameters
+// Audio pitch parameters
 const int BASE_TICKS = 125;
-const int MAX_TICKS  = 100;
+const int MAX_TICKS  = 95;
 
-// Offset to skip header bytes if needed
-const uint32_t AUDIO_START_OFFSET = 0;
-
-unsigned long lastPacketTime = 0;
-const unsigned long CONNECTION_TIMEOUT_MS = 3000;
+volatile unsigned long lastPacketTime = 0;
+const unsigned long CONNECTION_TIMEOUT_MS = 30000;
 unsigned long lastBlinkTime = 0;
 bool ledState = LED_OFF;
 
-int targetPWM = 0;
+volatile int targetPWM = 0;
 int currentPWM = 0;
 
 unsigned long lastRampTime = 0;
 const unsigned long RAMP_INTERVAL_MS = 20;
 const int PWM_STEP = 5;
 
+// Audio control flags
 volatile bool isAudioPlaying = false;
-volatile uint32_t soundIndex = AUDIO_START_OFFSET;
-volatile int fadeVolume = 0; // 0 to 256 for smooth start/stop envelope
-hw_timer_t *audioTimer = NULL;
+volatile bool isHornPlaying = false;
+volatile uint32_t soundIndex = 0;
+volatile uint32_t hornIndex = 0;
 
-// Hardware Timer ISR
+hw_timer_t *audioTimer = NULL;
+int lastAudioTicks = -1;
+
+// Setup audio timer interrupt (8000 Hz base)
 void IRAM_ATTR onAudioTimer() {
-  // 1. Smooth Fade-In / Fade-Out control (~3 ms transition)
-  if (isAudioPlaying) {
-    if (fadeVolume < 256) fadeVolume += 8;
-  } else {
-    if (fadeVolume > 0) fadeVolume -= 8;
+  uint8_t sample = 0;
+  bool activeSound = false;
+
+  // Priority 1: Horn
+  if (isHornPlaying && hornSoundLen > 0) {
+    sample = hornSound[hornIndex];
+    hornIndex++;
+    activeSound = true;
+
+    if (hornIndex >= hornSoundLen) {
+      hornIndex = 0;
+      isHornPlaying = false; // Гудок закінчився, повертаємось до фону
+    }
+  } 
+  // Priority 2: Motor sound (chug-chug)
+  else if (isAudioPlaying && chugSoundLen > 0) {
+    sample = chugSound[soundIndex];
+    soundIndex++;
+    activeSound = true;
+
+    if (soundIndex >= chugSoundLen) {
+      soundIndex = 0;
+    }
   }
 
-  // 2. BTL Audio playback
-  if (fadeVolume > 0 && chugSoundLen > AUDIO_START_OFFSET) {
-    if (soundIndex < AUDIO_START_OFFSET) {
-      soundIndex = AUDIO_START_OFFSET;
-    }
-
-    uint32_t idx = soundIndex;
-    uint16_t sample = chugSound[idx];
-
-    // Smooth seam transition (crossfade last 32 samples with the beginning sample)
-    if (idx >= chugSoundLen - 32) {
-      uint32_t remaining = chugSoundLen - idx;
-      uint16_t firstSample = chugSound[AUDIO_START_OFFSET];
-      sample = (sample * remaining + firstSample * (32 - remaining)) / 32;
-    }
-
-    // Apply fade envelope (fast bitwise division by 256)
-    sample = (sample * fadeVolume) >> 8;
-
-    // Output BTL anti-phase signals
-    ledcWrite(AUDIO_CH, (uint8_t)sample);
-    ledcWrite(AUDIO_CH_INV, (uint8_t)(255 - sample));
-
-    if (isAudioPlaying) {
-      soundIndex++;
-      if (soundIndex >= chugSoundLen) {
-        soundIndex = AUDIO_START_OFFSET; // Loop back to audio start
-      }
-    }
+  if (activeSound) {
+    ledcWrite(AUDIO_CH, sample);
+    ledcWrite(AUDIO_CH_INV, 255 - sample);
   } else {
-    // Output 0V on both pins during silence
     ledcWrite(AUDIO_CH, 0);
     ledcWrite(AUDIO_CH_INV, 0);
-    soundIndex = AUDIO_START_OFFSET;
   }
 }
 
 void updateAudioPitch(int pwm) {
   int absPwm = abs(pwm);
+  int ticks = BASE_TICKS;
 
-  if (absPwm == 0) {
-    timerAlarmWrite(audioTimer, BASE_TICKS, true);
-    return;
+  if (absPwm > 0) {
+    ticks = map(absPwm, SPEED_1, SPEED_3, BASE_TICKS, MAX_TICKS);
+    ticks = constrain(ticks, MAX_TICKS, BASE_TICKS);
   }
 
-  // Мапінг від 1-ї швидкості до 3-ї швидкості
-  int ticks = map(absPwm, PWM_SPEED_1, PWM_SPEED_3, BASE_TICKS, MAX_TICKS);
-  ticks = constrain(ticks, MAX_TICKS, BASE_TICKS); // Тримає межі (100..125)
-
-  timerAlarmWrite(audioTimer, ticks, true);
+  if (ticks != lastAudioTicks) {
+    lastAudioTicks = ticks;
+    timerAlarmWrite(audioTimer, ticks, true);
+  }
 }
 
 int stateToPWM(int8_t state) {
   switch (state) {
-    case 3:  return PWM_SPEED_3;
-    case 2:  return PWM_SPEED_2;
-    case 1:  return PWM_SPEED_1;
-    case -1: return -PWM_SPEED_1;
+    case 3:  return SPEED_3;
+    case 2:  return SPEED_2;
+    case 1:  return SPEED_1;
+    case -1: return -SPEED_1;
     case 0:
     default: return 0;
   }
@@ -124,33 +117,40 @@ int stateToPWM(int8_t state) {
 
 void updateMotorHardware(int pwm) {
   if (pwm > 0) {
-    // Forward
     ledcWrite(MOTOR_CH_1, pwm);
     ledcWrite(MOTOR_CH_2, 0);
     isAudioPlaying = true;
   } 
   else if (pwm < 0) {
-    // Reverse
     ledcWrite(MOTOR_CH_1, 0);
     ledcWrite(MOTOR_CH_2, abs(pwm));
     isAudioPlaying = true;
   } 
   else {
-    // Full stop
     ledcWrite(MOTOR_CH_1, 0);
     ledcWrite(MOTOR_CH_2, 0);
     isAudioPlaying = false;
+    soundIndex = 0;
   }
 
-  // Update audio playback pitch matching motor speed
   updateAudioPitch(pwm);
 }
 
+// Receive data: 1st byte = speed, 2nd byte = horn button (1/0)
 void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
-  if (len > 0) {
+  if (len >= 1) {
     lastPacketTime = millis();
     int8_t speedState = (int8_t)incomingData[0];
     targetPWM = stateToPWM(speedState);
+  }
+
+  if (len >= 2) {
+    bool hornState = (incomingData[1] == 1);
+    // Start horn sound if button is pressed and it's not already playing
+    if (hornState && !isHornPlaying) {
+      hornIndex = 0;
+      isHornPlaying = true;
+    }
   }
 }
 
@@ -162,13 +162,13 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LED_OFF);
 
-  // Configure Motor PWM (1 kHz, 8-bit resolution)
+  // Setup motor PWM
   ledcSetup(MOTOR_CH_1, 1000, 8);
   ledcAttachPin(IN1_PIN, MOTOR_CH_1);
   ledcSetup(MOTOR_CH_2, 1000, 8);
   ledcAttachPin(IN2_PIN, MOTOR_CH_2);
 
-  // Configure BTL Audio PWM (31.25 kHz, 8-bit resolution)
+  // Setup audio PWM BTL
   ledcSetup(AUDIO_CH, 31250, 8);
   ledcAttachPin(AUDIO_PIN, AUDIO_CH);
   ledcSetup(AUDIO_CH_INV, 31250, 8);
@@ -184,15 +184,15 @@ void setup() {
   esp_wifi_set_ps(WIFI_PS_NONE);
   esp_wifi_set_max_tx_power(32);
 
-  if (esp_now_init() != ESP_OK) {
-    return;
+  if (esp_now_init() == ESP_OK) {
+    esp_now_register_recv_cb(OnDataRecv);
   }
-  esp_now_register_recv_cb(OnDataRecv);
 
-  // Hardware Timer configuration (Base 8000 Hz = 125 ticks)
+  // Timer settings
   audioTimer = timerBegin(0, 80, true);
   timerAttachInterrupt(audioTimer, &onAudioTimer, true);
-  timerAlarmWrite(audioTimer, 125, true);
+  lastAudioTicks = BASE_TICKS;
+  timerAlarmWrite(audioTimer, BASE_TICKS, true);
   timerAlarmEnable(audioTimer);
 }
 
@@ -211,17 +211,31 @@ void loop() {
     }
   }
 
-  if (now - lastRampTime >= RAMP_INTERVAL_MS) {
+if (now - lastRampTime >= RAMP_INTERVAL_MS) {
     lastRampTime = now;
-    if (currentPWM != targetPWM) {
-      if (currentPWM < targetPWM) {
-        currentPWM += PWM_STEP;
-        if (currentPWM > targetPWM) currentPWM = targetPWM;
+    int target = targetPWM;
+
+    if (currentPWM != target) {
+      // INSTANT START FROM ZERO: avoid motor stall at low PWM values
+      if (currentPWM == 0) {
+        if (target > 0) {
+          currentPWM = SPEED_1;   // Jump directly to min speed forward
+        } else if (target < 0) {
+          currentPWM = -SPEED_1;  // Jump directly to min speed reverse
+        }
       } 
-      else if (currentPWM > targetPWM) {
-        currentPWM -= PWM_STEP;
-        if (currentPWM < targetPWM) currentPWM = targetPWM;
+      // SMOOTH RAMP BETWEEN SPEED STEPS OR SMOOTH STOP
+      else {
+        if (currentPWM < target) {
+          currentPWM += PWM_STEP;
+          if (currentPWM > target) currentPWM = target;
+        } 
+        else if (currentPWM > target) {
+          currentPWM -= PWM_STEP;
+          if (currentPWM < target) currentPWM = target;
+        }
       }
+
       updateMotorHardware(currentPWM);
     }
   }
