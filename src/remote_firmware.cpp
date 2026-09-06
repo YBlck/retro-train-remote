@@ -3,8 +3,8 @@
 #include <WiFi.h>
 #include <esp_wifi.h>
 
-const int BTN_UP_PIN   = 6;
-const int BTN_DOWN_PIN = 7;
+const int BTN_UP_PIN   = 7;
+const int BTN_DOWN_PIN = 6;
 const int BTN_HORN_PIN = 5;
 
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
@@ -46,7 +46,7 @@ void setup() {
   WiFi.mode(WIFI_STA);
 
   // Radio Optimizations:
-  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE); // Lock Wi-Fi channel
+  esp_wifi_set_channel(11, WIFI_SECOND_CHAN_NONE); // Lock Wi-Fi channel
   esp_wifi_set_ps(WIFI_PS_NONE);                  // Disable sleep mode for instant response
   esp_wifi_set_max_tx_power(32);                  // Lower TX power (~8dBm)
 

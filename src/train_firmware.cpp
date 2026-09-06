@@ -5,8 +5,8 @@
 #include "sound_data.h"
 
 // DRV8833 driver pins
-const int IN1_PIN = 5; 
-const int IN2_PIN = 4; 
+const int IN1_PIN = 4; 
+const int IN2_PIN = 5; 
 
 // Audio BTL pins
 const int AUDIO_PIN     = 2; 
@@ -24,16 +24,16 @@ const int AUDIO_CH     = 2;
 const int AUDIO_CH_INV = 3; 
 
 // Motor speed mapping
-const int SPEED_1 = 90;   
-const int SPEED_2 = 105;  
-const int SPEED_3 = 120;  
+const int SPEED_1 = 180;   
+const int SPEED_2 = 220;  
+const int SPEED_3 = 255;  
 
 // Audio pitch parameters
 const int BASE_TICKS = 125;
 const int MAX_TICKS  = 95;
 
 volatile unsigned long lastPacketTime = 0;
-const unsigned long CONNECTION_TIMEOUT_MS = 3000;
+const unsigned long CONNECTION_TIMEOUT_MS = 10000;
 unsigned long lastBlinkTime = 0;
 bool ledState = LED_OFF;
 
@@ -66,7 +66,7 @@ void IRAM_ATTR onAudioTimer() {
 
     if (hornIndex >= hornSoundLen) {
       hornIndex = 0;
-      isHornPlaying = false; // Гудок закінчився, повертаємось до фону
+      isHornPlaying = false;
     }
   } 
   // Priority 2: Motor sound (chug-chug)
@@ -109,7 +109,7 @@ int stateToPWM(int8_t state) {
     case 3:  return SPEED_3;
     case 2:  return SPEED_2;
     case 1:  return SPEED_1;
-    case -1: return -SPEED_1;
+    case -1: return -SPEED_1 - 40;
     case 0:
     default: return 0;
   }
@@ -163,9 +163,9 @@ void setup() {
   digitalWrite(LED_PIN, LED_OFF);
 
   // Setup motor PWM
-  ledcSetup(MOTOR_CH_1, 8000, 8);
+  ledcSetup(MOTOR_CH_1, 1000, 8);
   ledcAttachPin(IN1_PIN, MOTOR_CH_1);
-  ledcSetup(MOTOR_CH_2, 8000, 8);
+  ledcSetup(MOTOR_CH_2, 1000, 8);
   ledcAttachPin(IN2_PIN, MOTOR_CH_2);
 
   // Setup audio PWM BTL
@@ -180,7 +180,7 @@ void setup() {
   Serial.begin(115200);
 
   WiFi.mode(WIFI_STA);
-  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+  esp_wifi_set_channel(11, WIFI_SECOND_CHAN_NONE);
   esp_wifi_set_ps(WIFI_PS_NONE);
   esp_wifi_set_max_tx_power(32);
 
@@ -211,19 +211,31 @@ void loop() {
     }
   }
 
-  if (now - lastRampTime >= RAMP_INTERVAL_MS) {
+if (now - lastRampTime >= RAMP_INTERVAL_MS) {
     lastRampTime = now;
     int target = targetPWM;
 
     if (currentPWM != target) {
-      if (currentPWM < target) {
-        currentPWM += PWM_STEP;
-        if (currentPWM > target) currentPWM = target;
+      // INSTANT START FROM ZERO: avoid motor stall at low PWM values
+      if (currentPWM == 0) {
+        if (target > 0) {
+          currentPWM = SPEED_1;   // Jump directly to min speed forward
+        } else if (target < 0) {
+          currentPWM = -SPEED_1;  // Jump directly to min speed reverse
+        }
       } 
-      else if (currentPWM > target) {
-        currentPWM -= PWM_STEP;
-        if (currentPWM < target) currentPWM = target;
+      // SMOOTH RAMP BETWEEN SPEED STEPS OR SMOOTH STOP
+      else {
+        if (currentPWM < target) {
+          currentPWM += PWM_STEP;
+          if (currentPWM > target) currentPWM = target;
+        } 
+        else if (currentPWM > target) {
+          currentPWM -= PWM_STEP;
+          if (currentPWM < target) currentPWM = target;
+        }
       }
+
       updateMotorHardware(currentPWM);
     }
   }
