@@ -3,7 +3,7 @@
 #include <WiFi.h>
 #include <esp_wifi.h>
 
-const int BTN_UP_PIN   = 7;
+const int BTN_UP_PIN = 7;
 const int BTN_DOWN_PIN = 6;
 const int BTN_HORN_PIN = 5;
 
@@ -18,7 +18,7 @@ uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 int8_t currentSpeedState = 0;
 bool lastHornState = false;
 
-bool lastUpState   = HIGH;
+bool lastUpState = HIGH;
 bool lastDownState = HIGH;
 
 // Heartbeat ticker
@@ -46,9 +46,9 @@ void setup() {
   WiFi.mode(WIFI_STA);
 
   // Radio Optimizations:
-  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE); // Lock Wi-Fi channel
-  esp_wifi_set_ps(WIFI_PS_NONE);                  // Disable sleep mode for instant response
-  esp_wifi_set_max_tx_power(32);                  // Lower TX power (~8dBm)
+  esp_wifi_set_channel(11, WIFI_SECOND_CHAN_NONE); // Lock Wi-Fi channel
+  esp_wifi_set_ps(WIFI_PS_NONE); // Disable sleep mode for instant response
+  esp_wifi_set_max_tx_power(32); // Lower TX power (~8dBm)
 
   if (esp_now_init() != ESP_OK) {
     Serial.println("Error initializing ESP-NOW!");
@@ -70,12 +70,12 @@ void setup() {
 }
 
 void loop() {
-  bool upPressed   = (digitalRead(BTN_UP_PIN) == LOW);
+  bool upPressed = (digitalRead(BTN_UP_PIN) == LOW);
   bool downPressed = (digitalRead(BTN_DOWN_PIN) == LOW);
   bool hornPressed = (digitalRead(BTN_HORN_PIN) == LOW);
 
   // Edge detection for clicks (HIGH -> LOW transition)
-  bool upClicked   = (upPressed && lastUpState == HIGH);
+  bool upClicked = (upPressed && lastUpState == HIGH);
   bool downClicked = (downPressed && lastDownState == HIGH);
 
   int8_t nextState = currentSpeedState;
@@ -109,7 +109,7 @@ void loop() {
 
   unsigned long now = millis();
   bool speedChanged = (nextState != currentSpeedState);
-  bool hornChanged  = (hornPressed != lastHornState);
+  bool hornChanged = (hornPressed != lastHornState);
 
   // Send packet if speed state changed, horn state changed, or on heartbeat interval
   if (speedChanged || hornChanged || (now - lastSendTime >= HEARTBEAT_MS)) {
@@ -120,7 +120,7 @@ void loop() {
     lastSendTime = now;
   }
 
-  lastUpState   = !upPressed;
+  lastUpState = !upPressed;
   lastDownState = !downPressed;
 
   delay(25); // Debounce delay
