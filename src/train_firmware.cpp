@@ -109,7 +109,7 @@ int stateToPWM(int8_t state) {
     case 3: return SPEED_3;
     case 2: return SPEED_2;
     case 1: return SPEED_1;
-    case -1: return -SPEED_1 - 40;
+    case -1: return -SPEED_1 + 30;
     case 0:
     default: return 0;
   }
