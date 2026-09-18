@@ -21,6 +21,11 @@ bool lastHornState = false;
 bool lastUpState = HIGH;
 bool lastDownState = HIGH;
 
+unsigned long reverseDelayStart = 0;
+bool waitingForReverse = false;
+
+const unsigned long REVERSE_DELAY_MS = 200; // 0.2 second hold for reverse
+
 // Heartbeat ticker
 unsigned long lastSendTime = 0;
 const unsigned long HEARTBEAT_MS = 500;
@@ -49,7 +54,7 @@ void setup() {
   esp_wifi_set_channel(11, WIFI_SECOND_CHAN_NONE); // Lock Wi-Fi channel
   esp_wifi_set_ps(WIFI_PS_NONE); // Disable sleep mode for instant response
   esp_wifi_set_max_tx_power(32); // Lower TX power (~8dBm)
-
+  
   if (esp_now_init() != ESP_OK) {
     Serial.println("Error initializing ESP-NOW!");
     return;
@@ -73,10 +78,12 @@ void loop() {
   bool upPressed = (digitalRead(BTN_UP_PIN) == LOW);
   bool downPressed = (digitalRead(BTN_DOWN_PIN) == LOW);
   bool hornPressed = (digitalRead(BTN_HORN_PIN) == LOW);
-
+  
   // Edge detection for clicks (HIGH -> LOW transition)
   bool upClicked = (upPressed && lastUpState == HIGH);
   bool downClicked = (downPressed && lastDownState == HIGH);
+  
+  unsigned long now = millis();
 
   int8_t nextState = currentSpeedState;
 
@@ -84,7 +91,17 @@ void loop() {
   if (upPressed && downPressed) {
     nextState = 0;
   }
-  // 2. Mode: Currently moving FORWARD (1, 2, 3)
+  // 2. Mode: Currently waiting for REVERSE (-1)
+  else if (waitingForReverse) {
+    nextState = 0; // Stay in STOP while waiting for reverse
+    if (!downPressed) {
+      waitingForReverse = false; // Cancel reverse if DOWN released
+    } else if (now - reverseDelayStart >= REVERSE_DELAY_MS) {
+      nextState = -1; // Enter reverse after delay
+      waitingForReverse = false;
+    }
+  }
+  // 3. Mode: Currently moving FORWARD (1, 2, 3)
   else if (currentSpeedState > 0) {
     if (upClicked && currentSpeedState < 3) {
       nextState++; // Increase forward speed
@@ -92,22 +109,23 @@ void loop() {
       nextState--; // Decrease forward speed / stop
     }
   }
-  // 3. Mode: Currently STOPPED (0)
+  // 4. Mode: Currently STOPPED (0)
   else if (currentSpeedState == 0) {
     if (upClicked) {
       nextState = 1; // Start moving forward at Speed 1
     } else if (downPressed) {
-      nextState = -1; // Hold DOWN button for Reverse
+      waitingForReverse = true; // Start waiting for reverse
+      reverseDelayStart = now;
+      nextState = 0; // Stay in STOP while waiting for reverse
     }
   }
-  // 4. Mode: Currently REVERSING (-1)
+  // 5. Mode: Currently REVERSING (-1)
   else if (currentSpeedState == -1) {
     if (!downPressed || upPressed) {
       nextState = 0; // Releasing DOWN button triggers STOP
     }
   }
 
-  unsigned long now = millis();
   bool speedChanged = (nextState != currentSpeedState);
   bool hornChanged = (hornPressed != lastHornState);
 
